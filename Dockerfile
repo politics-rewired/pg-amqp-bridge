@@ -1,21 +1,26 @@
-FROM debian:jessie
+FROM ekidd/rust-musl-builder as builder
 
-ARG VERSION="0.0.0"
+WORKDIR /home/rust/
 
-ENV POSTGRESQL_URI="postgres://postgres@postgresql"
-ENV AMQP_URI="amqp://rabbitmq//"
-ENV BRIDGE_CHANNELS="events:amq.topic"
+# Avoid having to install/build all dependencies by copying
+# the Cargo files and making a dummy src/main.rs
+COPY Cargo.toml .
+COPY Cargo.lock .
+RUN echo "fn main() {}" > src/main.rs  \
+  && mkdir tests && echo "fn main() {}" > tests/main.rs  \
+  && cargo build --release
 
-RUN DEBIAN_FRONTEND="noninteractive" && BUILD_DEPS="curl libssl-dev xz-utils" && \
-    apt-get -qq update && \
-    apt-get -qq install -y --no-install-recommends $BUILD_DEPS openssl ca-certificates dnsutils && \
-    cd /tmp && \
-    curl -SLO https://github.com/subzerocloud/pg-amqp-bridge/releases/download/${VERSION}/pg-amqp-bridge-${VERSION}-x86_64-unknown-linux-gnu.tar.gz && \
-    tar zxf pg-amqp-bridge-${VERSION}-x86_64-unknown-linux-gnu.tar.gz && \
-    mv pg-amqp-bridge /usr/local/bin/pg-amqp-bridge && \
-    cd / && \
-    apt-get -qq purge --auto-remove -y $BUILD_DEPS && \
-    apt-get -qq clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+COPY . .
 
-CMD exec pg-amqp-bridge
+# We need to touch our real main.rs file or else docker will use the cached one.
+RUN sudo touch src/main.rs  \
+  && cargo build --release
+
+# Size optimization
+RUN strip target/x86_64-unknown-linux-musl/release/pg-amqp-bridge
+
+# Start building the final image
+FROM scratch
+WORKDIR /home/rust/
+COPY --from=builder /home/rust/target/x86_64-unknown-linux-musl/release/pg-amqp-bridge .
+ENTRYPOINT ["./pg-amqp-bridge"]
